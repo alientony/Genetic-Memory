@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 import networkx as nx
+import time
 
 def visualize_top_organism(organism, iteration):
     G = nx.DiGraph()
@@ -45,12 +46,32 @@ class Neuron:
         self.activation = sum(weighted_inputs)
         self.output = 1 / (1 + np.exp(-self.activation))
 
+FOOD_MIN_ENERGY = 10
+FOOD_MAX_ENERGY = 100
+
+
 class FoodSource:
     def __init__(self):
         self.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
         self.energy = 50
+def create_food_sources(num_food_sources, world):
+    food_sources = []
+    for _ in range(num_food_sources):
+        x = random.randint(0, world.shape[1] - 1)
+        y = random.randint(0, world.shape[0] - 1)
+        food_source = FoodSource()
+        food_source.position = (x, y)
+        food_source.energy = random.uniform(FOOD_MIN_ENERGY, FOOD_MAX_ENERGY)
+        food_sources.append(food_source)
+    return food_sources
+
+
 
 class Organism:
+    def __init__(self, world):
+        self.world = world
+        self.x = None
+        self.y = None
     def __init__(self, mutation_probability):
         self.mutation_probability = mutation_probability
         self.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
@@ -66,8 +87,6 @@ class Organism:
         self.velocity = np.array([0, 0])
         self.reproduction_count = 0
 
-
-
     def reproduce(self, mutation_probability):
         offspring = Organism(mutation_probability)  # Create a new instance of Organism
         offspring.connections = self.connections.copy()  # Copy connections from the parent to the offspring
@@ -78,293 +97,144 @@ class Organism:
             if random.random() < 0.05:  # 5% mutation rate
                 offspring.neurons[i].activation += np.random.normal(0, 0.1)  # Add random noise to the activation
 
-        if random.random() < mutation_probability:
-            # Apply mutation
+        # Mutate connections with a chance of mutation
+        for key in offspring.connections:
+            if random.random() < self.mutation_probability:
+                offspring.connections[key] += np.random.normal(0, 0.1)  # Add random noise to the connection weight
 
-            # Mutate connections and weights
-            offspring.connections = self.connections.copy()
-            for i, j in itertools.product(range(offspring.num_neurons), repeat=2):
-                if i != j:
-                    if (i, j) not in offspring.connections:
-                        if np.random.random() < 0.05:  # 5% chance of adding a connection
-                            offspring.connections[i, j] = np.random.randn()
-                    else:
-                        if np.random.random() < 0.05:  # 5% chance of removing a connection
-                            del offspring.connections[i, j]
-                        elif np.random.random() < 0.05:  # 5% chance of mutating the weight of a connection
-                            offspring.connections[i, j] += np.random.normal(0, 0.1)
+        # Position the offspring close to the parent
+        offspring.position = tuple(np.random.randint(max(0, self.position[i] - 10), min(world_size[i], self.position[i] + 10)) for i in range(2))
+        offspring.energy = self.energy / 2  # Transfer half of the parent's energy to the offspring
+        self.energy /= 2  # The parent loses half of its energy during reproduction
+        self.reproduction_count += 1
 
-        offspring.position = self.position
-        offspring.energy = self.energy / 2
-        self.energy /= 2
         return offspring
 
-    def move(self):
-        inputs = []
-        for other in organisms:
-            if other != self:
-                distance = np.sqrt((self.position[0]-other.position[0])**2 + (self.position[1]-other.position[1])**2)
-                inputs.append(1 / distance if distance != 0 else 0)
+    def update(self, food_sources):
+        inputs = [food_source.energy / (np.linalg.norm(np.array(self.position) - np.array(food_source.position)) + 1e-8) for food_source in food_sources]
 
-        # Add a food sensing neuron input
-        food_sensing_radius = 2  # 2-foot radius for sensing food
-        food_sensed = 0
-        for food_source in food_sources:
-            distance_to_food = np.sqrt((self.position[0] - food_source.position[0]) ** 2 + (self.position[1] - food_source.position[1]) ** 2)
-            if distance_to_food <= food_sensing_radius:
-                food_sensed = 1
-                break
-        inputs.append(food_sensed)
+        # Add memory neuron value to the inputs
+        inputs.append(self.neurons[10].output)
 
-        # Add sight neuron input
-        sight_angle = 30  # Angle in degrees for the sight range
-        sight_distance = 50  # Maximum distance for the sight range
-        sight_detected = 0
-        for other in organisms:
-            if other != self:
-                dx = other.position[0] - self.position[0]
-                dy = other.position[1] - self.position[1]
-                angle = np.arctan2(dy, dx) - np.arctan2(self.velocity[1], self.velocity[0])
-                angle = np.rad2deg((angle + np.pi) % (2 * np.pi) - np.pi)
-                distance = np.sqrt(dx ** 2 + dy ** 2)
-
-                if -sight_angle / 2 <= angle <= sight_angle / 2 and distance <= sight_distance:
-                    sight_detected = 1
-                    break
-        inputs.append(sight_detected)
-
-        # Update activations of the hidden neurons
-        for i in range(2, self.num_neurons - 1):
-            self.neurons[i].activate(inputs, self.connections)
-
-        # Update activation of the output neurons
-        for i in range(self.num_neurons - 1, self.num_neurons):
-            self.neurons[i].activate([n.output for n in self.neurons[2:self.num_neurons - 1]], self.connections)
-
-        # Calculate the velocity of the organism
-        acceleration = np.array([self.neurons[-1].output, self.neurons[-2].output]) * 2 - 1
-        self.velocity = (self.velocity + acceleration) / 2
-        self.velocity = self.velocity / np.linalg.norm(self.velocity)
-        self.position = np.array(self.position) + self.velocity
-        self.position = np.mod(self.position, world_size)
-        self.energy -= 1
-
-        # Check if the organism is close enough to a food source and consume it
-        food_eating_distance = 5
-        for food_source in food_sources:
-            distance_to_food = np.sqrt((self.position[0] - food_source.position[0]) ** 2 + (self.position[1] - food_source.position[1]) ** 2)
-            if distance_to_food <= food_eating_distance:
-                self.energy += food_source.energy
-                food_sources.remove(food_source)
-                food_sources.append(FoodSource())
-
-
-
-    def link(self, other):
-        distance = np.sqrt((self.position[0]-other.position[0])**2 + (self.position[1]-other.position[1])**2)
-        if distance == 1:
-            self.neurons.append(other)
-            other.neurons.append(self)
-            self.energy -= 5
-            other.energy -= 5
-
-    def read_memory(self, index):
-        if index >= 0 and index < len(self.memory):
-            return self.memory[index]
-        else:
-            return None
-
-    def write_memory(self, index, value):
-        if index >= 0:
-            if index < len(self.memory):
-                self.memory = self.memory[:index] + value + self.memory[index+1:]
-            else:
-                self.memory += value
-            self.energy -= 2
-
-    def receive(self, data):
-        if type(data) == str:
-            self.memory += data
-            self.energy -= 1
-
-    def transmit(self, data):
         for neuron in self.neurons:
-            if type(neuron) == tuple and neuron[0] == "transmitting":
-                neuron[1].receive(data)
-                self.energy -= 1
+            neuron.activate(inputs, self.connections)
 
-    def run(self):
-        self.move()
-        for other in organisms:
-            if other != self:
-                self.link(other)
-        if np.random.random() < 0.1:
-            if np.random.random() < 0.5:
-                if len(self.memory) > 0:
-                    index = np.random.randint(0, len(self.memory))
-                    value = self.read_memory(index)
-                    if value is not None:
-                        self.transmit(value)
-            else:
-                index = np.random.randint(0, len(self.memory)+1)
-                value = chr(np.random.randint(32, 127))
-                self.write_memory(index, value)
-        for neuron in self.neurons:
-            if type(neuron) == tuple and neuron[0] == "receiving":
-                receiving_neighbors = [n for n in self.neurons if type(n) == tuple and n[0] == "receiving" and n != neuron]
-                if receiving_neighbors:
-                    self.energy -= 10
-            elif type(neuron) == tuple and neuron[0] == "transmitting":
-                transmitting_neighbors = [n for n in self.neurons if type(n) == tuple and n[0] == "transmitting" and n != neuron]
-                if transmitting_neighbors:
-                    self.energy -= 10
-        if np.random.random() < 0.1:
-            self.energy += 1 if np.random.random() < 0.5 else -1
-            self.energy = max(0, self.energy)
-    
-    # Check if the organism's energy is below 0, and remove it from the organisms list if it dies
-        if self.energy <= 0:
-            organisms.remove(self)
+        self.velocity = np.array([self.neurons[8].output, self.neurons[9].output]) * 2 - 1
+        self.position = tuple(np.mod(np.array(self.position) + self.velocity, world_size))
 
-        #if np.random.random() < 0.01:
-        #    if np.random.random() < 0.5:
-       #         data = input()
-      #          if data:
-     #               self.receive(data)
-    #        else:
-   #             output_neurons = [neuron for neuron in self.neurons if type(neuron) == tuple and neuron[0] == "output"]
-  #              if output_neurons:
- #                   neuron = output_neurons[np.random.randint(0, len(output_neurons))]
-#                    value = chr(np.random.randint(32, 127))
- #                   neuron[1].receive(value)
-        for neuron in self.neurons:
-            if type(neuron) == tuple and neuron[0] == "receiving":
-                receiving_neighbors = [n for n in self.neurons if type(n) == tuple and n[0] == "receiving" and n != neuron]
-                if receiving_neighbors:
-                    self.energy -= 10
-            elif type(neuron) == tuple and neuron[0] == "transmitting":
-                transmitting_neighbors = [n for n in self.neurons if type(n) == tuple and n[0] == "transmitting" and n != neuron]
-                if transmitting_neighbors:
-                    self.energy -= 10
-        if np.random.random() < 0.1:
-            self.energy += 1 if np.random.random() < 0.5 else -1
-            self.energy = max(0, self.energy)
+        # Update memory content
+        memory_char = chr(int(self.neurons[7].output * 26) + 65)
+        self.memory += memory_char
+        if len(self.memory) > 5:
+            self.memory = self.memory[-5:]
 
-mutation_probability = 0.05  # Replace this with your desired value
-organism = Organism(mutation_probability)
-offspring = organism.reproduce(mutation_probability=0.2)  # mutation_probability will be 0.2
+        self.energy -= 0.1  # Every update the organism loses a small amount of energy
+
+# Simulation parameters
+num_iterations = 5000
+num_organisms = 50
+mutation_probability = 0.05
+initial_energy = 100
+food_sources = [FoodSource() for _ in range(10)]
+organisms = [Organism(mutation_probability) for _ in range(num_organisms)]
+
+NUM_FOOD_SOURCES = 20
 
 
-# Initialization of organisms and food sources
-organisms = [Organism(mutation_probability) for _ in range(100)]
-food_sources = [FoodSource() for _ in range(100)]
+NUM_ORGANISMS = 100  # Number of organisms to start with
 
-#set up the plot
-fig, ax = plt.subplots()
-plt.ion()  # Add this line
-ax.set_xlim(0, world_size[0])
-ax.set_ylim(0, world_size[1])
-ax.set_title("Organisms in the World")
-ax.set_xlabel("X Position")
-ax.set_ylabel("Y Position")
+if __name__ == "__main__":
+    world = np.zeros((50, 50))
 
-#the update_plot function
-def update_plot():
-    print("Updating plot...")
-    ax.clear()
+    # Create and add organisms to the world
+    organisms = []
+    for _ in range(NUM_ORGANISMS):
+        x = random.randint(0, world.shape[1] - 1)
+        y = random.randint(0, world.shape[0] - 1)
+        energy = random.randint(1, 100)
+        organism = Organism(world)
+        organism.x = x
+        organism.y = y
+        organism.energy = energy
+        world[y, x] = 1  # Mark the organism's position in the world
+        organisms.append(organism)
 
-    ax.set_xlim(0, world_size[0])
-    ax.set_ylim(0, world_size[1])
-    ax.set_title("Organisms in the World")
-    ax.set_xlabel("X Position")
-    ax.set_ylabel("Y Position")
+    # ... (Continue with the main simulation loop)
 
-    x = [organism.position[0] for organism in organisms]
-    y = [organism.position[1] for organism in organisms]
-    ax.scatter(x, y, c='b')
+    food_sources = create_food_sources(NUM_FOOD_SOURCES, world)
+    NUM_ITERATIONS = 1000
+    for _ in range(NUM_ITERATIONS):
+        # Update organisms and world
+        for organism in organisms:
+            organism.update(food_sources)
 
-    x_food = [food.position[0] for food in food_sources]
-    y_food = [food.position[1] for food in food_sources]
-    ax.scatter(x_food, y_food, c='r', marker='x')
+        # Refresh the world and the organisms' energy
+        world, food_sources = refresh_world(world, organisms, food_sources)
+    # Main simulation loop
+    for iteration in range(1000):
+        # Update organisms
+        for organism in organisms:
+            organism.update()
 
-    plt.savefig(f'plot_{t}.png')
-    plt.draw()
-    fig.canvas.flush_events()
-    plt.pause(0.01)
-    print(f"Plot updated. Organisms alive: {len(organisms)}")  # Add this line
+        # Remove dead organisms
+        organisms = [organism for organism in organisms if organism.energy > 0]
+
+        # Reproduction
+        new_organisms = []
+        for organism in organisms:
+            offspring = organism.reproduce()
+            if offspring:
+                new_organisms.append(offspring)
+
+        organisms.extend(new_organisms)
+
+        # Check if there are any organisms left in the simulation
+        if not organisms:
+            print("No organisms left in the simulation.")
+            break
+
+        # Find the organism with the highest energy
+        top_organism = max(organisms, key=lambda x: x.energy)
+        print(f"Iteration {iteration + 1}: Top organism at ({top_organism.x}, {top_organism.y}) with energy {top_organism.energy}")
 
 
-last_survivors = []
-
-top_reproducers = []
-
-import random
+food_sources = create_food_sources(NUM_FOOD_SOURCES, world)
 
 
 
-for t in range(10000):
-    print(f"Iteration {t}...")
+for iteration in range(num_iterations):
+    # Update organisms and handle reproduction
+    new_organisms = []
     for organism in organisms:
-        organism.run()
+        organism.update(food_sources)
+        if organism.energy >= initial_energy * 2:
+            offspring = organism.reproduce(mutation_probability)
+            new_organisms.append(offspring)
+    organisms.extend(new_organisms)
 
-    if len(organisms) == 0:  # If all organisms died, spawn new ones with random neurons
-        new_organisms = []
+    # Organisms consume food and regain energy
+    for organism in organisms:
+        for food_source in food_sources:
+            if np.linalg.norm(np.array(organism.position) - np.array(food_source.position)) < 10:
+                organism.energy += food_source.energy
+                food_source.energy = 0
 
-        # Include the last 6 survivors and reset their energy to 100
-        for survivor in last_survivors:
-            survivor.energy = 100
-            new_organisms.append(survivor)
+    # Refresh food sources
+    for food_source in food_sources:
+        if food_source.energy == 0:
+            food_source.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
+            food_source.energy = 50
 
-        # Include the top 5 reproducers and reset their energy to 100
-        for reproducer in top_reproducers:
-            reproducer.energy = 100
-            new_organisms.append(reproducer)
+    # Remove organisms with energy below 1
+    organisms = [organism for organism in organisms if organism.energy > 1]
 
-        # Spawn the remaining organisms randomly
-        remaining_count = max(0, 100 - len(last_survivors) - len(top_reproducers))
-        new_organisms.extend([Organism(mutation_probability) for _ in range(remaining_count)])
+    # Visualize the top organism every 50 iterations
+    if iteration % 50 == 0:
+        if organisms:  # Check if the organisms list is not empty
+            top_organism = max(organisms, key=lambda x: x.energy)
+            visualize_top_organism(top_organism, iteration)
+        else:
+            print("No organisms left")
+            break
 
-        organisms = new_organisms
-        last_survivors = []
-        top_reproducers = []
-    update_plot()
-
-
-    if len(organisms) == 0:  # If all organisms died, spawn new ones with random neurons
-        new_organisms = []
-        
-        # Include the last 6 survivors and reset their energy to 100
-        for survivor in last_survivors:
-            survivor.energy = 100
-            new_organisms.append(survivor)
-        
-        # Spawn the remaining organisms randomly
-        remaining_count = max(0, 100 - len(last_survivors))
-        new_organisms.extend([Organism(mutation_probability) for _ in range(remaining_count)])
-        
-        organisms = new_organisms
-        last_survivors = []
-
-
-
-    if len(organisms) <= 6:
-        last_survivors = list(organisms)
-
-    if t % 100 == 0:
-        update_plot()
-        avg_energy = sum(o.energy for o in organisms) / len(organisms)
-        print(f"Iteration {t}: Average energy = {avg_energy}")
-
-        if top_reproducers:
-            visualize_top_organism(top_reproducers[0], t)
-
-    if len(organisms) <= 6:
-        last_survivors = list(organisms)
-    else:
-        sorted_organisms = sorted(organisms, key=lambda o: o.reproduction_count, reverse=True)
-        top_reproducers = sorted_organisms[:5]        
-
-
-plt.show()
-
-
+    print(f"Iteration {iteration}: {len(organisms)} organisms")
