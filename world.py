@@ -72,49 +72,28 @@ class Neuron:
 class FoodSource:
     def __init__(self):
         self.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
-        self.energy = 50
+        self.energy = 100
+
 
 class Organism:
     def __init__(self, mutation_probability, reward_for_sharing=5, initial_neurons=9, initial_connections=9, num_neurons=None):
 
         self.brain = self.create_random_brain()
 
-        def create_random_brain(self):
-            # Define the architecture of the neural network
-            # Here's a simple example with one hidden layer
-            input_size = 10
-            hidden_size = 20
-            output_size = 5
+        self.reward_for_sharing = reward_for_sharing
+        self.mutation_probability = mutation_probability
+        self.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
 
-            # Initialize weights and biases with random values
-            W1 = np.random.randn(input_size, hidden_size)
-            b1 = np.random.randn(hidden_size)
-            W2 = np.random.randn(hidden_size, output_size)
-            b2 = np.random.randn(output_size)
-
-            return {'W1': W1, 'b1': b1, 'W2': W2, 'b2': b2}
-
-        def act(self, state):
-            # Implement the forward pass of the neural network using the state as input
-            # This function should return the action based on the output of the neural network
-            pass
-
-
-            self.reward_for_sharing = reward_for_sharing
-            self.mutation_probability = mutation_probability
-            self.position = np.random.randint(0, world_size[0]), np.random.randint(0, world_size[1])
-
-            if num_neurons is None:
-                self.num_neurons = initial_neurons + 3  # Add 3 new neurons for movement control
-            else:
-                self.num_neurons = num_neurons
+        if num_neurons is None:
+            self.num_neurons = initial_neurons + 3  # Add 3 new neurons for movement control
+        else:
+            self.num_neurons = num_neurons
 
         neuron_types = list(NeuronType)
         random.shuffle(neuron_types)
         neuron_type_cycle = cycle(neuron_types)
 
         self.neurons = [Neuron(next(neuron_type_cycle)) for _ in range(self.num_neurons)]
-
 
         # Initialize connections based on neuron types
         self.connections = {}
@@ -141,13 +120,41 @@ class Organism:
                     ):
                         self.connections[(i, j)] = np.random.randn() * 0.1
 
-
         self.memory = ""
-        self.energy = 100
+        self.energy = 150
         self.velocity = np.random.uniform(-1, 1, size=2)
         self.reproduction_count = 0
 
-    # ... rest of the class
+    def create_random_brain(self):
+        # Define the architecture of the neural network
+        # Here's a simple example with one hidden layer
+        input_size = 11
+        hidden_size = 20
+        output_size = 5
+
+        # Initialize weights and biases with random values
+        W1 = np.random.randn(input_size, hidden_size)
+        b1 = np.random.randn(hidden_size)
+        W2 = np.random.randn(hidden_size, output_size)
+        b2 = np.random.randn(output_size)
+
+        return {'W1': W1, 'b1': b1, 'W2': W2, 'b2': b2}
+
+    def act(self, state):
+        # Convert the state to a numpy array
+        state = np.array(state)
+
+        # Perform the forward pass of the neural network
+        Z1 = np.dot(state, self.brain['W1']) + self.brain['b1']
+        A1 = np.tanh(Z1)  # Apply activation function (tanh) to the hidden layer
+        Z2 = np.dot(A1, self.brain['W2']) + self.brain['b2']
+        A2 = np.tanh(Z2)  # Apply activation function (tanh) to the output layer
+
+        # Choose the action with the highest output value
+        action = np.argmax(A2)
+
+        return action
+
 
 
 
@@ -212,12 +219,39 @@ class Organism:
         self.energy /= 2
         return offspring
 
+
+    def act(self, state):
+        # Convert the state to a numpy array
+        state = np.array(state)
+
+        # Implement the forward pass of the neural network using the state as input
+        hidden = np.maximum(0, np.dot(state, self.brain['W1']) + self.brain['b1'])
+        output = np.dot(hidden, self.brain['W2']) + self.brain['b2']
+
+        # Softmax activation for the output layer
+        output_exp = np.exp(output - np.max(output))
+        output_softmax = output_exp / np.sum(output_exp)
+
+        return output_softmax
+    
+
+
     def move(self):
-        inputs = []
-        for other in organisms:
-            if other != self:
-                distance = np.sqrt((self.position[0]-other.position[0])**2 + (self.position[1]-other.position[1])**2)
-                inputs.append(1 / distance if distance != 0 else 0)
+        organism_positions = np.array([organism.position for organism in organisms if organism != self])
+        
+        if organism_positions.size == 0:
+            return
+        
+        distances = np.sqrt(np.sum((organism_positions - self.position) ** 2, axis=1))
+
+        closest_indices = np.argsort(distances)[:9]
+        closest_distances = distances[closest_indices]
+
+        inputs = closest_distances.tolist()
+
+        # Pad the inputs with zeros when there are fewer than 9 other organisms
+        while len(inputs) < 9:
+            inputs.append(0)
 
         # Add a food sensing neuron input
         food_sensing_radius = 2  # 2-foot radius for sensing food
@@ -228,7 +262,6 @@ class Organism:
                 food_sensed = 1
                 break
         inputs.append(food_sensed)
-
 
         # Add sight neuron input
         sight_angle = 30  # Angle in degrees for the sight range
@@ -247,18 +280,13 @@ class Organism:
                     break
         inputs.append(sight_detected)
 
-        # Update activations of the hidden neurons
-        for i in range(2, self.num_neurons - 3):  # Exclude the 3 new neurons for movement control
-            self.neurons[i].activate(inputs, self.connections)
-
-        # Update activation of the movement control neurons
-        for i in range(self.num_neurons - 3, self.num_neurons):
-            self.neurons[i].activate([n.output for n in self.neurons[2:self.num_neurons - 3]], self.connections)
-
         # Calculate the velocity of the organism
-        increase_velocity = self.neurons[-3].output
-        turn_left = self.neurons[-2].output
-        turn_right = self.neurons[-1].output
+        action = self.act(inputs)
+        increase_velocity = action[0]
+        turn_left = action[1]
+        turn_right = action[2]
+
+        # ... (the rest of the code for hidden neurons and movement control neurons)
 
         acceleration = np.array([increase_velocity, 0])
         self.velocity = (self.velocity + acceleration) / 2
@@ -274,15 +302,15 @@ class Organism:
         self.position = np.mod(self.position, world_size)
         self.energy -= 1
 
-
         # Check if the organism is close enough to a food source and consume it
-        food_eating_distance = 2
+        food_eating_distance = 3  # 3-foot distance for eating food
         for food_source in food_sources:
             distance_to_food = np.sqrt((self.position[0] - food_source.position[0]) ** 2 + (self.position[1] - food_source.position[1]) ** 2)
             if distance_to_food <= food_eating_distance:
                 self.energy += food_source.energy
                 food_sources.remove(food_source)
                 food_sources.append(FoodSource())
+
 
 
 
@@ -358,17 +386,7 @@ class Organism:
         if self.energy <= 0:
             organisms.remove(self)
 
-        #if np.random.random() < 0.01:
-                #    if np.random.random() < 0.5:
-              #         data = input()
-                #          if data:
-                #               self.receive(data)
-              #        else:
-              #             output_neurons = [neuron for neuron in self.neurons if type(neuron) == tuple and neuron[0] == "output"]
-            #              if output_neurons:
-            #                   neuron = output_neurons[np.random.randint(0, len(output_neurons))]
-            #    value = chr(np.random.randint(32, 127))
-             #                   neuron[1].receive(value)
+
         for neuron in self.neurons:
             if type(neuron) == tuple and neuron[0] == "receiving":
                 receiving_neighbors = [n for n in self.neurons if type(n) == tuple and n[0] == "receiving" and n != neuron]
@@ -400,6 +418,7 @@ ax.set_title("Organisms in the World")
 ax.set_xlabel("X Position")
 ax.set_ylabel("Y Position")
 
+reproduction_threshold = 200  # Adjust this value to control how much energy is required for reproduction
 
 
 last_survivors = []
@@ -418,6 +437,7 @@ pygame.init()
 world_size_pixels = (1000, 1000)  # Adjust the size of the window as needed
 screen = pygame.display.set_mode(world_size_pixels)
 pygame.display.set_caption('Organisms World')
+max_organisms = 200  # Set the maximum number of organisms allowed in the simulation
 
 
 def update_display():
@@ -450,8 +470,14 @@ for t in range(10000):
     for organism in organisms:
         organism.run()
 
-    for organism in organisms:
-        organism.move()
+
+
+
+    # Check if the organism has enough energy to reproduce and if the total number of organisms is less than the maximum allowed
+    if organism.energy >= reproduction_threshold and len(organisms) < max_organisms:
+        offspring = organism.reproduce(mutation_probability)
+        organisms.append(offspring)
+
 
 
     if len(organisms) == 0:  # If all organisms died, spawn new ones with random neurons
@@ -474,24 +500,6 @@ for t in range(10000):
         organisms = new_organisms
         last_survivors = []
         top_reproducers = []
-
-
-
-    if len(organisms) == 0:  # If all organisms died, spawn new ones with random neurons
-        new_organisms = []
-        
-        # Include the last 6 survivors and reset their energy to 100
-        for survivor in last_survivors:
-            survivor.energy = 100
-            new_organisms.append(survivor)
-        
-        # Spawn the remaining organisms randomly
-        remaining_count = max(0, 100 - len(last_survivors))
-        new_organisms.extend([Organism(mutation_probability) for _ in range(remaining_count)])
-        
-        organisms = new_organisms
-        last_survivors = []
-
 
 
     if len(organisms) <= 6:
